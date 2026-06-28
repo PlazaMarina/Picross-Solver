@@ -95,8 +95,6 @@
   }
   .clue-input::-webkit-outer-spin-button, .clue-input::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0;}
   .clue-input:focus{ outline-offset:0; }
-  .head-line-good{ outline:1px solid var(--good); border-radius:4px; }
-  .head-line-bad{ outline:1px solid var(--bad); border-radius:4px; }
 
   .cell{
     background:#262a33; border:1px solid #1c1f26; cursor:pointer;
@@ -203,7 +201,6 @@
     <h2 style="margin-top:6px;">Actions</h2>
     <div class="btn-col">
       <button class="primary" id="solveBtn">Solve puzzle</button>
-      <button id="validateBtn">Validate current fill</button>
       <button id="clearGridBtn">Clear grid colors</button>
       <button class="danger" id="clearCluesBtn">Clear all clues</button>
     </div>
@@ -811,26 +808,6 @@ document.getElementById('solveBtn').onclick = () => {
       setStatus(res.msg, 'err');
     }
   }, 10);
-};
-
-// ---------- validate ----------
-document.getElementById('validateBtn').onclick = () => {
-  const { rows, cols, colors, grid, rowClues, colClues } = state;
-  let allGood = true;
-  const board = document.getElementById('board');
-  board.querySelectorAll('.clue-input').forEach(inp => {
-    inp.classList.remove('head-line-good','head-line-bad');
-    const line = inp.dataset.line, idx = +inp.dataset.idx, colorId = +inp.dataset.color;
-    let actual = 0;
-    if(line === 'row'){ for(let c=0;c<cols;c++) if(grid[idx][c]===colorId) actual++; }
-    else { for(let r=0;r<rows;r++) if(grid[r][idx]===colorId) actual++; }
-    const expected = (line === 'row' ? rowClues[idx][colorId] : colClues[idx][colorId]) || 0;
-    if(expected === 0) return;
-    const good = actual === expected;
-    inp.classList.add(good ? 'head-line-good' : 'head-line-bad');
-    if(!good) allGood = false;
-  });
-  setStatus(allGood ? 'all clues satisfied.' : 'some lines do not match their clues yet.', allGood ? 'ok' : 'err');
 };
 
 // ---------- presets ----------
