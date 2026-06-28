@@ -797,6 +797,23 @@ function solvePuzzle() {
 }
 
 document.getElementById('solveBtn').onclick = () => {
+  const { rows, cols, colors, rowClues, colClues } = state;
+  const ids = colors.map(c => c.id);
+  const under = [];
+
+  for (let r = 0; r < rows; r++) {
+    const total = ids.reduce((s, id) => s + (rowClues[r][id] || 0), 0);
+    if (total < cols) under.push(`Row ${r + 1}: total ${total} < ${cols} cols`);
+  }
+  for (let c = 0; c < cols; c++) {
+    const total = ids.reduce((s, id) => s + (colClues[c][id] || 0), 0);
+    if (total < rows) under.push(`Col ${c + 1}: total ${total} < ${rows} rows`);
+  }
+  if (under.length > 0) {
+    setStatus(under.join(' | '), 'err');
+    return;
+  }
+
   setStatus('solving…');
   setTimeout(() => {
     const res = solvePuzzle();
