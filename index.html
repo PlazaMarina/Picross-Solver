@@ -538,52 +538,13 @@ document.getElementById('clearCluesBtn').onclick = () => {
 };
 
 // ---------- solver ----------
-// Returns true if all cells of colorId in `cells` array form one contiguous block.
-function isContiguous(cells, colorId){
-  let started = false, ended = false;
-  for(const v of cells){
-    if(v === colorId){
-      if(ended) return false; // gap found before this cell
-      started = true;
-    } else if(started){
-      ended = true;
-    }
-  }
-  return true;
-}
 
-// Checks connectivity constraints for all fully-filled rows and columns.
-function checkConnectivity(result, rows, cols){
-  for(let r=0;r<rows;r++){
-    const row = result[r];
-    if(row.includes(null)) continue;
-    for(const [cid, conn] of Object.entries(state.rowClueConn[r])){
-      const id = parseInt(cid);
-      const count = row.filter(v => v === id).length;
-      if(count <= 1) continue; // 0 or 1 cell is always trivially "contiguous" — constraint is meaningless
-      const effective = conn === true ? true : false;
-      if(isContiguous(row, id) !== effective) return false;
-    }
-  }
-  for(let c=0;c<cols;c++){
-    const col = Array.from({length:rows}, (_,r) => result[r][c]);
-    if(col.includes(null)) continue;
-    for(const [cid, conn] of Object.entries(state.colClueConn[c])){
-      const id = parseInt(cid);
-      const count = col.filter(v => v === id).length;
-      if(count <= 1) continue;
-      const effective = conn === true ? true : false;
-      if(isContiguous(col, id) !== effective) return false;
-    }
-  }
-  return true;
-}
-
-function solvePuzzle(){
+function solvePuzzle() {
   const { rows, cols, colors, rowClues, colClues } = state;
   const ids = colors.map(c => c.id);
-  const allIds = [0, ...ids];
+  const allIds = [0, ...ids]; // 0 = background
 
+  // Build per-line target counts. key 0 = background cells.
   const rowTarget = rowClues.map(clue => {
     const t = {}; let sum = 0;
     ids.forEach(id => { t[id] = clue[id] || 0; sum += t[id]; });
@@ -597,86 +558,245 @@ function solvePuzzle(){
     return t;
   });
 
-  for(let r=0;r<rows;r++) if(rowTarget[r][0] < 0) return { ok:false, msg:`row ${r+1} clue total exceeds ${cols} columns` };
-  for(let c=0;c<cols;c++) if(colTarget[c][0] < 0) return { ok:false, msg:`column ${c+1} clue total exceeds ${rows} rows` };
+  for (let r = 0; r < rows; r++) if (rowTarget[r][0] < 0) return { ok: false, msg: `row ${r+1} clue total exceeds ${cols} columns` };
+  for (let c = 0; c < cols; c++) if (colTarget[c][0] < 0) return { ok: false, msg: `column ${c+1} clue total exceeds ${rows} rows` };
 
+  // Mutable solver state
   let rowRem = rowTarget.map(o => ({...o}));
   let colRem = colTarget.map(o => ({...o}));
-  let result = Array.from({length:rows}, () => Array(cols).fill(null));
-  let filledRow = Array(rows).fill(0);
-  let filledCol = Array(cols).fill(0);
-
-  function viableIds(r,c){
-    return allIds.filter(id => rowRem[r][id] > 0 && colRem[c][id] > 0);
-  }
-
-  function snapshot(){
-    return {
-      rowRem: rowRem.map(o => ({...o})),
-      colRem: colRem.map(o => ({...o})),
-      result: result.map(row => row.slice()),
-      filledRow: filledRow.slice(),
-      filledCol: filledCol.slice()
-    };
-  }
-  function restore(s){
-    rowRem = s.rowRem; colRem = s.colRem; result = s.result;
-    filledRow = s.filledRow; filledCol = s.filledCol;
-  }
-
-  function assign(r,c,id){
-    result[r][c] = id;
-    rowRem[r][id]--; colRem[c][id]--;
-    filledRow[r]++; filledCol[c]++;
-  }
-
+  let result = Array.from({length: rows}, () => Array(cols).fill(null));
   let steps = 0;
-  const STEP_LIMIT = 4_000_000;
+  const STEP_LIMIT = 8_000_000;
 
-  function solveRec(){
-    steps++;
-    if(steps > STEP_LIMIT) return 'timeout';
+  // Returns conn state for a color in a line: true=connected, false=separated, null=unset
+  function getConn(isRow, idx, id) {
+    return (isRow ? state.rowClueConn[idx] : state.colClueConn[idx])[id] ?? null;
+  }
 
-    let progress = true;
-    while(progress){
-      progress = false;
-      for(let r=0;r<rows;r++){
-        for(let c=0;c<cols;c++){
-          if(result[r][c] !== null) continue;
-          const v = viableIds(r,c);
-          if(v.length === 0) return false;
-          if(v.length === 1){ assign(r,c,v[0]); progress = true; }
+  // Extract current line values as a plain array
+  function getLine(isRow, idx) {
+    if (isRow) return result[idx].slice();
+    const out = new Array(rows);
+    for (let r = 0; r < rows; r++) out[r] = result[r][idx];
+    return out;
+  }
+
+  // Find all valid start positions for a contiguous block of `total` cells in `line`,
+  // treating cells with value `id` as pre-placed and all other non-null cells as blocked.
+  // Uses a sliding-window blocked-count scan → O(len) per color.
+  function findWindows(line, id, total) {
+    const len = line.length;
+    if (total <= 0) return [];
+    if (total > len) return [];
+
+    let minA = len, maxA = -1;
+    const isBlocked = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      const v = line[i];
+      if (v === id) { if (i < minA) minA = i; if (i > maxA) maxA = i; }
+      else if (v !== null) isBlocked[i] = 1;
+    }
+
+    // Window must span every already-assigned cell of this color
+    const hasAssigned = maxA >= 0;
+    const startMin = hasAssigned ? Math.max(0, maxA - total + 1) : 0;
+    const startMax = hasAssigned ? Math.min(len - total, minA) : len - total;
+    if (startMin > startMax) return [];
+
+    // Sliding window: count blocked cells in the current window of size `total`
+    let blockedCount = 0;
+    for (let i = 0; i < total; i++) blockedCount += isBlocked[i];
+
+    const valid = [];
+    for (let s = 0; s <= len - total; s++) {
+      if (s > 0) {
+        blockedCount -= isBlocked[s - 1];
+        blockedCount += isBlocked[s + total - 1];
+      }
+      if (s >= startMin && s <= startMax && blockedCount === 0) valid.push(s);
+    }
+    return valid;
+  }
+
+  // Compute the overlap of all valid windows for each connected color in a line.
+  // Cells covered by EVERY valid window are forced to that color.
+  // Pushes forced {r,c,id} assignments into `out`. Returns false on conflict.
+  function propagateConnected(isRow, lineIdx, out) {
+    const line = getLine(isRow, lineIdx);
+    const rem = isRow ? rowRem[lineIdx] : colRem[lineIdx];
+
+    for (const id of ids) {
+      if (getConn(isRow, lineIdx, id) !== true) continue;
+      let assignedCount = 0;
+      for (let i = 0; i < line.length; i++) if (line[i] === id) assignedCount++;
+      const total = assignedCount + (rem[id] || 0);
+      if (total === 0) continue;
+
+      const windows = findWindows(line, id, total);
+      if (windows.length === 0) return false; // no valid placement → conflict
+
+      // Intersection of all windows: [maxStart, minEnd] is in every window
+      let maxStart = 0, minEnd = line.length - 1;
+      for (const s of windows) {
+        if (s > maxStart) maxStart = s;
+        const e = s + total - 1;
+        if (e < minEnd) minEnd = e;
+      }
+
+      for (let i = maxStart; i <= minEnd; i++) {
+        if (line[i] === null) {
+          out.push(isRow ? { r: lineIdx, c: i, id } : { r: i, c: lineIdx, id });
+        } else if (line[i] !== id) {
+          return false; // forced cell already occupied by another color
         }
       }
     }
+    return true;
+  }
 
-    if(!checkConnectivity(result, rows, cols)) return false;
+  // Full line feasibility check: catches negative counts, impossible connected placements,
+  // and separation violations for fully-assigned colors.
+  function lineFeasible(isRow, lineIdx) {
+    const line = getLine(isRow, lineIdx);
+    const rem = isRow ? rowRem[lineIdx] : colRem[lineIdx];
+    if ((rem[0] || 0) < 0) return false;
 
-    let best = null, bestR=-1, bestC=-1;
-    for(let r=0;r<rows;r++){
-      for(let c=0;c<cols;c++){
-        if(result[r][c] !== null) continue;
-        const v = viableIds(r,c);
-        if(best === null || v.length < best.length){ best = v; bestR=r; bestC=c; }
+    for (const id of ids) {
+      const remaining = rem[id] || 0;
+      if (remaining < 0) return false;
+      const conn = getConn(isRow, lineIdx, id);
+
+      if (conn === true) {
+        // Connected: a valid contiguous window must still exist
+        let assignedCount = 0;
+        for (let i = 0; i < line.length; i++) if (line[i] === id) assignedCount++;
+        const total = assignedCount + remaining;
+        if (total > 0 && findWindows(line, id, total).length === 0) return false;
+      } else if (conn === false && remaining === 0) {
+        // Separated and fully placed: cells must NOT all form one contiguous run
+        const pos = [];
+        for (let i = 0; i < line.length; i++) if (line[i] === id) pos.push(i);
+        if (pos.length > 1 && pos[pos.length - 1] - pos[0] + 1 === pos.length) return false;
       }
     }
-    if(best === null) return true;
+    return true;
+  }
 
-    for(const id of best){
+  // Assign cell (r,c) to `id`, decrement remaining counts.
+  // Returns false if either counter goes negative (over-assignment conflict).
+  function assign(r, c, id) {
+    result[r][c] = id;
+    rowRem[r][id]--;
+    colRem[c][id]--;
+    return rowRem[r][id] >= 0 && colRem[c][id] >= 0;
+  }
+
+  // Run constraint propagation to fixpoint.
+  // Each pass does three stages in order, looping until no new assignments are made:
+  //   1. Count-based singleton: any cell with exactly one viable color → assign it.
+  //   2. Connected-block interval overlap: force cells covered by every valid window.
+  //   3. Feasibility check: prune if any line is now impossible.
+  // Returns true (ok), false (conflict), or 'timeout'.
+  function propagateFull() {
+    let progress = true;
+    while (progress) {
+      if (++steps > STEP_LIMIT) return 'timeout';
+      progress = false;
+
+      // Stage 1: count-based singleton propagation
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          if (result[r][c] !== null) continue;
+          let only = -1, count = 0;
+          for (const id of allIds) {
+            if ((rowRem[r][id] || 0) > 0 && (colRem[c][id] || 0) > 0) {
+              only = id; count++;
+              if (count > 1) break;
+            }
+          }
+          if (count === 0) return false;
+          if (count === 1) {
+            if (!assign(r, c, only)) return false;
+            progress = true;
+          }
+        }
+      }
+
+      // Stage 2: connected-block interval overlap propagation for all lines
+      const forced = [];
+      for (let r = 0; r < rows; r++) {
+        if (!propagateConnected(true, r, forced)) return false;
+      }
+      for (let c = 0; c < cols; c++) {
+        if (!propagateConnected(false, c, forced)) return false;
+      }
+      for (const { r, c, id } of forced) {
+        if (result[r][c] !== null) {
+          if (result[r][c] !== id) return false;
+          continue; // already assigned consistently, skip
+        }
+        if (!assign(r, c, id)) return false;
+        progress = true;
+      }
+
+      // Stage 3: full feasibility sweep across all lines
+      for (let r = 0; r < rows; r++) if (!lineFeasible(true, r)) return false;
+      for (let c = 0; c < cols; c++) if (!lineFeasible(false, c)) return false;
+    }
+    return true;
+  }
+
+  function snapshot() {
+    return {
+      rowRem: rowRem.map(o => ({...o})),
+      colRem: colRem.map(o => ({...o})),
+      result: result.map(r => r.slice())
+    };
+  }
+  function restore(s) {
+    rowRem = s.rowRem; colRem = s.colRem; result = s.result;
+  }
+
+  function solveRec() {
+    const res = propagateFull();
+    if (res === 'timeout') return 'timeout';
+    if (!res) return false;
+
+    // MRV heuristic: pick the unassigned cell with the fewest viable color options
+    let best = null, bestR = -1, bestC = -1;
+    outer: for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (result[r][c] !== null) continue;
+        let count = 0;
+        for (const id of allIds) {
+          if ((rowRem[r][id] || 0) > 0 && (colRem[c][id] || 0) > 0) count++;
+          if (count > (best ? best.length : Infinity)) break;
+        }
+        if (count === 0) return false;
+        if (best === null || count < best.length) {
+          best = allIds.filter(id => (rowRem[r][id] || 0) > 0 && (colRem[c][id] || 0) > 0);
+          bestR = r; bestC = c;
+          if (best.length === 2) break outer; // can't beat 2 without singleton (handled above)
+        }
+      }
+    }
+    if (best === null) return true; // all cells assigned → solution found
+
+    for (const id of best) {
       const snap = snapshot();
-      assign(bestR,bestC,id);
-      const res = solveRec();
-      if(res === true) return true;
-      if(res === 'timeout') return 'timeout';
+      assign(bestR, bestC, id);
+      const r = solveRec();
+      if (r === true) return true;
+      if (r === 'timeout') return 'timeout';
       restore(snap);
     }
     return false;
   }
 
   const outcome = solveRec();
-  if(outcome === true) return { ok:true, grid: result };
-  if(outcome === 'timeout') return { ok:false, msg: 'puzzle too large / ambiguous, stopped after ' + STEP_LIMIT + ' steps' };
-  return { ok:false, msg: 'no valid fill satisfies these clues' };
+  if (outcome === true) return { ok: true, grid: result };
+  if (outcome === 'timeout') return { ok: false, msg: `too complex — stopped after ${STEP_LIMIT.toLocaleString()} steps` };
+  return { ok: false, msg: 'no valid fill satisfies these clues' };
 }
 
 document.getElementById('solveBtn').onclick = () => {
