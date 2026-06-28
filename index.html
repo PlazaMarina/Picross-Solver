@@ -31,7 +31,7 @@
   .layout{ display:flex; gap:22px; align-items:flex-start; flex-wrap:wrap; }
   .panel{
     background:var(--panel); border:1px solid var(--line); border-radius:12px;
-    padding:16px 18px;
+    padding:16px 18px; min-width:0;
   }
   .panel h2{ font-size:12px; text-transform:uppercase; letter-spacing:.8px; color:var(--text-dim); margin:0 0 12px; font-weight:600;}
   .side{ width:240px; display:flex; flex-direction:column; gap:14px; }
@@ -135,7 +135,7 @@
   .ss-handle.tr{ box-shadow:0 0 0 2px #ffd34d; }
   .ss-handle.br{ box-shadow:0 0 0 2px #ef4b6a; }
   .ss-handle.bl{ box-shadow:0 0 0 2px #6cb8ff; }
-  .ss-actions{ display:flex; gap:8px; margin-top:14px; }
+  .ss-actions{ display:flex; gap:8px; margin-top:14px; flex-wrap:wrap; }
   .ss-progress{ font-size:12.5px; color:var(--text-dim); margin-top:10px; }
   .ss-review-table{ width:100%; border-collapse:collapse; font-size:12px; }
   .ss-review-table th, .ss-review-table td{ border:1px solid var(--line); padding:3px; text-align:center; }
@@ -148,6 +148,24 @@
   .ss-conn-select{
     width:62px; font-size:10px; background:var(--panel-2); border:1px solid var(--line);
     color:var(--text); border-radius:4px; margin-top:3px; padding:1px;
+  }
+
+  /* mobile breakpoint: stack panels full-width, grow touch targets */
+  @media (max-width:640px){
+    body{ padding:14px 12px 50px; }
+    h1{ font-size:19px; }
+    .sub{ font-size:12px; margin-bottom:16px; }
+    .layout{ flex-direction:column; gap:14px; }
+    .side{ width:100%; }
+    .panel{ width:100%; box-sizing:border-box; padding:14px; }
+    .btn-col{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    button{ padding:9px 10px; font-size:13px; }
+    .clue-input{ width:30px; height:30px; min-width:30px; font-size:12px; }
+    .coloritem .rm{ width:30px; height:30px; }
+    .brush{ width:36px; height:36px; }
+    .ss-box{ width:100%; max-height:90vh; }
+    .ss-handle{ width:26px; height:26px; }
+    .ss-review-table input{ width:30px; font-size:11px; }
   }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
@@ -869,7 +887,7 @@ function ssBody(){ return document.getElementById('ssBody'); }
 function ssShowFilePick(){
   ssBody().innerHTML = `
     <div class="ss-step-label">
-      Uses the current grid size (${state.rows} rows × ${state.cols} cols) and ${state.colors.length} colour slot(s) — set those first on the left if they don't match the puzzle you're importing.<br/>
+      Uses the current grid size (${state.rows} rows × ${state.cols} cols) and ${state.colors.length} colour slot(s) — set those first on the left if they don't match the puzzle you're importing.<br><br>
       Pick a screenshot of the puzzle's clue panel (the numbers around the grid, before you've filled anything in).
     </div>
     <button class="primary" id="ssPickBtn">Choose screenshot</button>
@@ -998,181 +1016,209 @@ function ssDetectCircle(box){
   cx.drawImage(ss.img, box.x, box.y, w, h, 0, 0, w, h);
   const id = cx.getImageData(0,0,w,h).data;
   function px(x,y){
-    x = Math.round(x); y = Math.round(y);
-    const i = (y * w + x) * 4;
-    return [id[i], id[i+1], id[i+2]];
+    x = Math.max(0, Math.min(w-1, Math.round(x))); y = Math.max(0, Math.min(h-1, Math.round(y)));
+    const i = (y*w+x)*4; return [id[i], id[i+1], id[i+2]];
   }
-  const bg = [ px(1,1), px(w-2,1), px(w-2,h-2), px(1,h-2) ];
-  const bgAvg = {r:0,g:0,b:0};
-  bg.forEach(rgb => { bgAvg.r += rgb[0]; bgAvg.g += rgb[1]; bgAvg.b += rgb[2]; });
-  bgAvg.r /= 4; bgAvg.g /= 4; bgAvg.b /= 4;
-  const R = Math.min(w,h) * 0.4;
-  const cx_ = w / 2, cy_ = h / 2;
-  const ring = [];
-  for(let a=0;a<Math.PI*2;a+=Math.PI/20){
-    const x = cx_ + R * Math.cos(a);
-    const y = cy_ + R * Math.sin(a);
-    const rgb = px(x,y);
-    const dist = Math.hypot(rgb[0]-bgAvg.r, rgb[1]-bgAvg.g, rgb[2]-bgAvg.b);
-    ring.push(dist);
+  function avgPatch(cx0, cy0, size){
+    let r=0,g=0,b=0,n=0;
+    for(let dy=-size; dy<=size; dy++) for(let dx=-size; dx<=size; dx++){
+      const [pr,pg,pb] = px(cx0+dx, cy0+dy); r+=pr; g+=pg; b+=pb; n++;
+    }
+    return [r/n, g/n, b/n];
   }
-  ring.sort((a,b)=>a-b);
-  const medianDist = ring[Math.floor(ring.length/2)];
-  return medianDist > 20;
+  const patchSize = Math.max(1, Math.round(Math.min(w,h)*0.08));
+  const corners = [
+    avgPatch(patchSize, patchSize, patchSize),
+    avgPatch(w-patchSize, patchSize, patchSize),
+    avgPatch(patchSize, h-patchSize, patchSize),
+    avgPatch(w-patchSize, h-patchSize, patchSize)
+  ];
+  const bg = corners.reduce((a,p)=>[a[0]+p[0],a[1]+p[1],a[2]+p[2]],[0,0,0]).map(v=>v/4);
+
+  const cxC = w/2, cyC = h/2;
+  const radius = Math.min(w,h)*0.40;
+  const dists = [];
+  for(let i=0;i<16;i++){
+    const ang = (i/16)*2*Math.PI;
+    const sx = cxC + radius*Math.cos(ang), sy = cyC + radius*Math.sin(ang);
+    const p = avgPatch(sx, sy, Math.max(1, Math.round(patchSize*0.6)));
+    dists.push(Math.sqrt((p[0]-bg[0])**2 + (p[1]-bg[1])**2 + (p[2]-bg[2])**2));
+  }
+  dists.sort((a,b)=>a-b);
+  return dists[Math.floor(dists.length/2)] > 16; // median ring-vs-corner colour distance
 }
 
-function ssRunOcr(){
-  ssBody().innerHTML = `<div class="ss-step-label">Running OCR…</div>`;
-  Tesseract.recognize(ss.img, 'eng', { logger: m => {} }).then(result => {
-    const text = result.data.text;
-    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-    ss.results = { rowClues: {}, colClues: {} };
-    lines.forEach((line, idx) => {
-      const nums = line.split(/\s+/).map(s => parseInt(s,10)).filter(n => !isNaN(n));
-      if(nums.length > 0){
-        if(idx < state.rows + 5) ss.results.rowClues[idx] = nums;
-        else ss.results.colClues[idx - state.rows - 5] = nums;
-      }
-    });
-    ssShowReview();
-  }).catch(err => {
-    ssBody().innerHTML = `<div class="ss-step-label">OCR Error: ${err.message}</div>`;
-  });
+async function ssGetWorker(){
+  if(ss.worker) return ss.worker;
+  ss.worker = await Tesseract.createWorker('eng');
+  await ss.worker.setParameters({ tessedit_char_whitelist: '0123456789' });
+  return ss.worker;
+}
+
+// Crop+upscale a region of the source image to its own canvas, return as canvas (for OCR input).
+function ssCropUpscaled(box, scale=4){
+  const c = document.createElement('canvas');
+  const w = Math.max(1, Math.round(box.w));
+  const h = Math.max(1, Math.round(box.h));
+  c.width = w*scale; c.height = h*scale;
+  const cx = c.getContext('2d');
+  cx.imageSmoothingEnabled = true;
+  cx.drawImage(ss.img, box.x, box.y, w, h, 0, 0, w*scale, h*scale);
+  return c;
+}
+
+async function ssRunOcr(){
+  ssBody().innerHTML = `<div class="ss-step-label">Running OCR…</div><div class="ss-progress" id="ssProg">starting…</div>`;
+  const progEl = document.getElementById('ssProg');
+  const worker = await ssGetWorker();
+
+  const K = state.colors.length;
+  const R = state.rows, C = state.cols;
+
+  // Column header block: u-axis = column index (0..C-1), v-axis = colour slot (0..K-1)
+  const colClues = Array.from({length:C}, () => ({}));
+  const colCircled = Array.from({length:C}, () => ({}));
+  let done = 0, total = C*K + R*K;
+  for(let c=0;c<C;c++){
+    for(let k=0;k<K;k++){
+      const box = ssSubcellBox(ss.colQuad, c/C, (c+1)/C, k/K, (k+1)/K);
+      const canvas = ssCropUpscaled(box);
+      const { data } = await worker.recognize(canvas);
+      const txt = (data.text||'').replace(/[^0-9]/g,'').trim();
+      if(txt){ colClues[c][k+1] = parseInt(txt, 10); colCircled[c][k+1] = ssDetectCircle(box); }
+      done++; progEl.textContent = `column clues: ${done}/${total}`;
+    }
+  }
+
+  // Row header block: v-axis = row index (0..R-1), u-axis = colour slot (0..K-1)
+  const rowClues = Array.from({length:R}, () => ({}));
+  const rowCircled = Array.from({length:R}, () => ({}));
+  for(let r=0;r<R;r++){
+    for(let k=0;k<K;k++){
+      const box = ssSubcellBox(ss.rowQuad, k/K, (k+1)/K, r/R, (r+1)/R);
+      const canvas = ssCropUpscaled(box);
+      const { data } = await worker.recognize(canvas);
+      const txt = (data.text||'').replace(/[^0-9]/g,'').trim();
+      if(txt){ rowClues[r][k+1] = parseInt(txt, 10); rowCircled[r][k+1] = ssDetectCircle(box); }
+      done++; progEl.textContent = `row clues: ${done}/${total}`;
+    }
+  }
+
+  ss.results = { rowClues, colClues, rowCircled, colCircled };
+  ssShowReview();
 }
 
 function ssShowReview(){
+  const K = state.colors.length;
+  const R = state.rows, C = state.cols;
+  const { rowClues, colClues, rowCircled, colCircled } = ss.results;
+
+  // circleMeans: which connectivity state a detected circle represents.
+  // Confirmed by user: circle = connected, no circle = separated.
+  if(!ss.circleMeans) ss.circleMeans = 'connected';
+
+  function connOptionsHTML(kind, idx, k, circled){
+    const hasCircle = circled === true;
+    const val = (hasCircle ? ss.circleMeans : (ss.circleMeans === 'connected' ? 'separated' : 'connected'));
+    return `<select class="ss-conn-select" data-kind="${kind}" data-r="${idx}" data-k="${k}" data-circled="${hasCircle}">
+      <option value="unset" ${val==='unset'?'selected':''}>unset</option>
+      <option value="connected" ${val==='connected'?'selected':''}>connected</option>
+      <option value="separated" ${val==='separated'?'selected':''}>separated</option>
+    </select>`;
+  }
+
+  function rowTableHTML(){
+    let h = `<table class="ss-review-table"><tr><th>row</th>`;
+    for(let k=0;k<K;k++) h += `<th style="color:${state.colors[k].hex}">${state.colors[k].name}</th>`;
+    h += `</tr>`;
+    for(let r=0;r<R;r++){
+      h += `<tr><td>${r+1}</td>`;
+      for(let k=0;k<K;k++){
+        const v = rowClues[r][k+1] ?? '';
+        const circ = rowCircled[r][k+1];
+        h += `<td><input data-kind="row" data-r="${r}" data-k="${k+1}" value="${v}">`;
+        if(v !== '') h += `<br>${connOptionsHTML('row', r, k+1, circ)}`;
+        h += `</td>`;
+      }
+      h += `</tr>`;
+    }
+    return h + `</table>`;
+  }
+  function colTableHTML(){
+    let h = `<table class="ss-review-table"><tr><th>col</th>`;
+    for(let k=0;k<K;k++) h += `<th style="color:${state.colors[k].hex}">${state.colors[k].name}</th>`;
+    h += `</tr>`;
+    for(let c=0;c<C;c++){
+      h += `<tr><td>${c+1}</td>`;
+      for(let k=0;k<K;k++){
+        const v = colClues[c][k+1] ?? '';
+        const circ = colCircled[c][k+1];
+        h += `<td><input data-kind="col" data-r="${c}" data-k="${k+1}" value="${v}">`;
+        if(v !== '') h += `<br>${connOptionsHTML('col', c, k+1, circ)}`;
+        h += `</td>`;
+      }
+      h += `</tr>`;
+    }
+    return h + `</table>`;
+  }
+
   ssBody().innerHTML = `
     <div class="ss-step-label">
-      Review the recognized clues below. Edit as needed, then click <b>Apply clues</b>.
+      OCR done — <b>check every cell before applying</b>, small/odd-shaped digits can misread.
+      Blank = that colour isn't in that line. Circle = connected, no circle = separated (confirmed) —
+      flip the swap button below only if this particular puzzle looks wrong, then fix any individual
+      cells that look off.
     </div>
-    <div style="overflow:auto; max-height:400px;">
-      <table class="ss-review-table">
-        <thead>
-          <tr>
-            <th colspan="${state.colors.length}">Row clues</th>
-          </tr>
-        </thead>
-        <tbody id="ssRowsBody"></tbody>
-      </table>
-      <table class="ss-review-table">
-        <thead>
-          <tr>
-            <th colspan="${state.colors.length}">Column clues</th>
-          </tr>
-        </thead>
-        <tbody id="ssColsBody"></tbody>
-      </table>
+    <div class="ss-actions" style="margin-top:0;margin-bottom:12px;">
+      <button id="ssSwapBtn">Swap: circle currently = <b id="ssSwapLabel">${ss.circleMeans}</b> — click to flip</button>
+    </div>
+    <div style="display:flex; gap:18px; flex-wrap:wrap;">
+      <div><div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">Row clues</div>${rowTableHTML()}</div>
+      <div><div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">Column clues</div>${colTableHTML()}</div>
     </div>
     <div class="ss-actions">
-      <button class="primary" id="ssApplyBtn">Apply clues</button>
-      <button id="ssResetBtn">Reset — recalibrate</button>
+      <button class="primary" id="ssApplyBtn">Apply to puzzle</button>
+      <button id="ssRedoBtn">Redo calibration</button>
+      <button id="ssCancelBtn">Cancel</button>
     </div>
   `;
-  const rb = document.getElementById('ssRowsBody');
-  const cb = document.getElementById('ssColsBody');
-  for(let i=0;i<state.rows;i++){
-    const tr = document.createElement('tr');
-    for(let c=0;c<state.colors.length;c++){
-      const td = document.createElement('td');
-      const inp = document.createElement('input');
-      inp.type = 'number'; inp.min = 0; inp.max = state.cols;
-      inp.value = ss.results.rowClues[i] ? ss.results.rowClues[i][c] || 0 : 0;
-      inp.className = 'ss-review-table-inp';
-      inp.dataset.type = 'row'; inp.dataset.idx = i; inp.dataset.color = c;
-      td.appendChild(inp);
-      tr.appendChild(td);
-    }
-    rb.appendChild(tr);
-  }
-  for(let i=0;i<state.cols;i++){
-    const tr = document.createElement('tr');
-    for(let c=0;c<state.colors.length;c++){
-      const td = document.createElement('td');
-      const inp = document.createElement('input');
-      inp.type = 'number'; inp.min = 0; inp.max = state.rows;
-      inp.value = ss.results.colClues[i] ? ss.results.colClues[i][c] || 0 : 0;
-      inp.className = 'ss-review-table-inp';
-      inp.dataset.type = 'col'; inp.dataset.idx = i; inp.dataset.color = c;
-      td.appendChild(inp);
-      tr.appendChild(td);
-    }
-    cb.appendChild(tr);
-  }
-  document.getElementById('ssApplyBtn').onclick = () => {
-    document.querySelectorAll('.ss-review-table-inp').forEach(inp => {
-      const type = inp.dataset.type, idx = +inp.dataset.idx, color = +inp.dataset.color;
-      const val = +inp.value || 0;
-      if(type === 'row'){
-        if(val > 0) state.rowClues[idx][state.colors[color].id] = val;
-      } else {
-        if(val > 0) state.colClues[idx][state.colors[color].id] = val;
-      }
+
+  document.getElementById('ssSwapBtn').onclick = () => {
+    ss.circleMeans = ss.circleMeans === 'connected' ? 'separated' : 'connected';
+    document.getElementById('ssSwapLabel').textContent = ss.circleMeans;
+    document.querySelectorAll('.ss-conn-select').forEach(sel => {
+      if(sel.dataset.circled !== 'true') return; // only flip cells that actually had a detected circle
+      sel.value = sel.value === 'connected' ? 'separated' : (sel.value === 'separated' ? 'connected' : sel.value);
     });
-    ssClose();
-    renderBoard();
-    setStatus('clues imported from screenshot.', 'ok');
   };
-  document.getElementById('ssResetBtn').onclick = () => {
-    ss.colQuad = null;
-    ssShowCalibration('col');
+  document.getElementById('ssRedoBtn').onclick = () => ssShowCalibration('col');
+  document.getElementById('ssCancelBtn').onclick = ssClose;
+  document.getElementById('ssApplyBtn').onclick = () => {
+    const newRowClues = Array.from({length:R}, () => ({}));
+    const newColClues = Array.from({length:C}, () => ({}));
+    const newRowConn  = Array.from({length:R}, () => ({}));
+    const newColConn  = Array.from({length:C}, () => ({}));
+    document.querySelectorAll('#ssBody input[data-kind]').forEach(inp => {
+      const kind = inp.dataset.kind, idx = +inp.dataset.r, k = +inp.dataset.k;
+      const val = parseInt(inp.value, 10);
+      if(!val || val <= 0) return;
+      if(kind === 'row') newRowClues[idx][k] = val; else newColClues[idx][k] = val;
+    });
+    document.querySelectorAll('#ssBody select.ss-conn-select').forEach(sel => {
+      const kind = sel.dataset.kind, idx = +sel.dataset.r, k = +sel.dataset.k;
+      if(sel.value === 'unset') return;
+      const v = sel.value === 'connected';
+      if(kind === 'row') newRowConn[idx][k] = v; else newColConn[idx][k] = v;
+    });
+    state.rowClues = newRowClues;
+    state.colClues = newColClues;
+    state.rowClueConn = newRowConn;
+    state.colClueConn = newColConn;
+    renderBoard();
+    setStatus('clues + connectivity imported from screenshot.', 'ok');
+    ssClose();
   };
 }
-
-renderColorList();
-renderBrushRow();
-renderBoard();
-
-// Auto-select content on focus so typing immediately replaces the existing number.
-document.getElementById('board').addEventListener('focusin', e => {
-  if(e.target.classList.contains('clue-input')) e.target.select();
-});
-// Delegated on #board so it survives re-renders.
-document.getElementById('board').addEventListener('keydown', e => {
-  if(!['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) return;
-  if(!e.target.classList.contains('clue-input')) return;
-  e.preventDefault();
-
-  if(e.key === ' '){
-    const inp = e.target;
-    const line    = inp.dataset.line;
-    const idx     = +inp.dataset.idx;
-    const colorId = +inp.dataset.color;
-    const connStore = line === 'row' ? state.rowClueConn[idx] : state.colClueConn[idx];
-    const next = cycleConn(connStore[colorId] ?? null);
-    if(next === null) delete connStore[colorId];
-    else connStore[colorId] = next;
-    applyConnStyle(inp, state.colors.find(c => c.id === colorId).hex, next);
-    return;
-  }
-
-  const line     = e.target.dataset.line;
-  const idx      = +e.target.dataset.idx;
-  const colorId  = +e.target.dataset.color;
-  const colorIds = state.colors.map(c => c.id);
-  const ci       = colorIds.indexOf(colorId);
-
-  let nextLine = line, nextIdx = idx, nextColor = colorId;
-
-  if(line === 'col'){
-    // Left/Right moves between columns; Up/Down moves between colors in same column
-    if(e.key === 'ArrowLeft')       nextIdx  = idx - 1;
-    else if(e.key === 'ArrowRight') nextIdx  = idx + 1;
-    else if(e.key === 'ArrowUp')    nextColor = colorIds[ci - 1] ?? colorId;
-    else if(e.key === 'ArrowDown')  nextColor = colorIds[ci + 1] ?? colorId;
-  } else {
-    // Up/Down moves between rows; Left/Right moves between colors in same row
-    if(e.key === 'ArrowUp')         nextIdx  = idx - 1;
-    else if(e.key === 'ArrowDown')  nextIdx  = idx + 1;
-    else if(e.key === 'ArrowLeft')  nextColor = colorIds[ci - 1] ?? colorId;
-    else if(e.key === 'ArrowRight') nextColor = colorIds[ci + 1] ?? colorId;
-  }
-
-  const target = document.querySelector(
-    `.clue-input[data-line="${nextLine}"][data-idx="${nextIdx}"][data-color="${nextColor}"]`
-  );
-  if(target) target.focus();
-});
 </script>
-
 </body>
 </html>
